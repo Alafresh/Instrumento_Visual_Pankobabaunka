@@ -1,60 +1,461 @@
-import './style.css'
-import heroImg from './assets/hero.png'
-import javascriptLogo from './assets/javascript.svg'
-import viteLogo from './assets/vite.svg'
-import { setupCounter } from './counter.js'
+'use strict'
+/* PHYSARUM · vista fija a pantalla completa. Agentes de 3 sensores sobre un rastro difuso.
+   Cada "punto" (algoritmo) define: parámetro = base + amplitud · S^exponente, con S = rastro sensado bajo el agente
+   (técnica de Sage Jenson). Un punto es el FONDO y otro el PINCEL; el pincel pinta una máscara que los mezcla. */
+const CFG = { AGENTS: 20000, GW: 384, CAP: 3 }
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
+/* Puntos: sd distancia de sensor, sa ángulo de sensor, ra giro, md paso → [base, amplitud, exponente]; sc escala del sensado; dp depósito; dc decaimiento */
+const P = [
+  {
+    n: 'Encaje',
+    sd: [5, 0, 1],
+    sa: [0.95, 0, 1],
+    ra: [0.7, 0, 1],
+    md: [1.1, 0, 1],
+    sc: 1,
+    dp: 0.9,
+    dc: 0.9,
+  },
+  {
+    n: 'Serpientes',
+    sd: [6, 0, 1],
+    sa: [1.57, 0, 1],
+    ra: [0.4, 0, 1],
+    md: [1, 0, 1],
+    sc: 1,
+    dp: 0.9,
+    dc: 0.9,
+  },
+  {
+    n: 'Puntos',
+    sd: [3, 0, 1],
+    sa: [1.5, 0, 1],
+    ra: [1.5, 0, 1],
+    md: [0.8, 0, 1],
+    sc: 1,
+    dp: 1.5,
+    dc: 0.9,
+  },
+  {
+    n: 'Nervios',
+    sd: [14, 0, 1],
+    sa: [0.25, 0, 1],
+    ra: [0.12, 0, 1],
+    md: [1.2, 0, 1],
+    sc: 1,
+    dp: 0.3,
+    dc: 0.88,
+  },
+  {
+    n: 'Manchas',
+    sd: [20, 0, 1],
+    sa: [0.7, 0, 1],
+    ra: [0.5, 0, 1],
+    md: [1.5, 0, 1],
+    sc: 1,
+    dp: 0.9,
+    dc: 0.95,
+  },
+  {
+    n: 'Esponja',
+    sd: [4, 0, 1],
+    sa: [1.0, 0, 1],
+    ra: [0.3, 0, 1],
+    md: [0.7, 0, 1],
+    sc: 1,
+    dp: 1.5,
+    dc: 0.95,
+  },
+  {
+    n: 'Ráfaga',
+    sd: [20, 0, 1],
+    sa: [0.15, 0, 1],
+    ra: [0.1, 0, 1],
+    md: [2, 0, 1],
+    sc: 1,
+    dp: 0.9,
+    dc: 0.9,
+  },
+  {
+    n: 'Niebla',
+    sd: [2, 0, 1],
+    sa: [0.2, 0, 1],
+    ra: [0.15, 0, 1],
+    md: [1.8, 0, 1],
+    sc: 1,
+    dp: 0.3,
+    dc: 0.9,
+  },
+]
+let fon = 0,
+  pin = 1,
+  M = 0,
+  BR = 14,
+  relief = 4,
+  k = 0,
+  kFrom = 0,
+  kTo = 0,
+  kT0 = -1e9,
+  flash = 0
 
-document.querySelector('#app').innerHTML = `
-<section id="center">
-  <div class="hero">
-    <img src="${heroImg}" class="base" width="170" height="179">
-    <img src="${javascriptLogo}" class="framework" alt="JavaScript logo"/>
-    <img src="${viteLogo}" class="vite" alt="Vite logo" />
-  </div>
-  <div>
-    <h1>Get started</h1>
-    <p>Edit <code>src/main.js</code> and save to test <code>HMR</code></p>
-  </div>
-  <button id="counter" type="button" class="counter"></button>
-</section>
+const renderer = new THREE.WebGLRenderer({ antialias: false })
+renderer.setPixelRatio(1)
+renderer.setSize(innerWidth, innerHeight)
+document.body.appendChild(renderer.domElement)
+const scene = new THREE.Scene(),
+  cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 10)
+cam.position.z = 5 // cámara fija: el plano llena la pantalla
+const ASP = innerWidth / innerHeight,
+  GW = CFG.GW,
+  GH = Math.round(GW / ASP),
+  CAP = CFG.CAP
+let tr = new Float32Array(GW * GH),
+  tmp = new Float32Array(GW * GH)
+const tr2 = new Float32Array(GW * GH),
+  mask = new Float32Array(GW * GH)
+const XM = new Int32Array(GW),
+  XP = new Int32Array(GW)
+for (let x = 0; x < GW; x++) {
+  XM[x] = x ? x - 1 : GW - 1
+  XP[x] = x < GW - 1 ? x + 1 : 0
+}
+const LUT = new Uint8Array(256)
+for (let i = 0; i < 256; i++) LUT[i] = Math.pow(i / 255, 0.7) * 255
+const texData = new Uint8Array(GW * GH * 4)
+const tex = new THREE.DataTexture(
+  texData,
+  GW,
+  GH,
+  THREE.RGBAFormat,
+  THREE.UnsignedByteType,
+)
+tex.magFilter = tex.minFilter = THREE.LinearFilter
+const U = {
+  tr: { value: tex },
+  px: { value: new THREE.Vector2(1 / GW, 1 / GH) },
+  relief: { value: relief },
+  k: { value: 0 },
+  flash: { value: 0 },
+}
+scene.add(
+  new THREE.Mesh(
+    new THREE.PlaneGeometry(2, 2),
+    new THREE.ShaderMaterial({
+      uniforms: U,
+      vertexShader:
+        'varying vec2 vUv;void main(){vUv=uv;gl_Position=vec4(position.xy,0.,1.);}',
+      fragmentShader: `varying vec2 vUv;uniform sampler2D tr;uniform vec2 px;uniform float relief,k,flash;
+float H(vec2 u){return texture2D(tr,u).r;}
+vec3 grad(float h){ // azul cielo (k=0) ↔ oro (k=1)
+ vec3 a=mix(vec3(.008,.03,.09),vec3(.04,.02,0.),k),b=mix(vec3(.05,.38,.75),vec3(.7,.4,.05),k),c=mix(vec3(.6,.88,1.),vec3(1.,.86,.42),k);
+ return h<.5?mix(a,b,h*2.):mix(b,c,(h-.5)*2.);}
+void main(){
+ vec4 t=texture2D(tr,vUv);float h=t.r;
+ float dx=H(vUv+vec2(px.x,0.))-H(vUv-vec2(px.x,0.)),dy=H(vUv+vec2(0.,px.y))-H(vUv-vec2(0.,px.y));
+ vec3 n=normalize(vec3(-dx*relief,-dy*relief,1.)),L=normalize(vec3(-.5,.6,.9));
+ float dif=max(dot(n,L),0.),spec=pow(max(dot(reflect(-L,n),vec3(0.,0.,1.)),0.),40.);
+ float grow=clamp((t.r-t.g)*6.,0.,1.); // rastro que está creciendo: canal retrasado vs actual
+ vec3 col=grad(h)*(.55+.7*dif)+grad(1.)*spec*h*.9+grad(.8)*h*h*.3;
+ col+=mix(vec3(.7,.95,1.),vec3(1.,.95,.7),k)*grow*.8;
+ col*=1.+flash*.7;
+ gl_FragColor=vec4(col,1.);}`,
+    }),
+  ),
+)
 
-<div class="ticks"></div>
+/* ---------- Puntero y pincel ---------- */
+const ring = new THREE.Mesh(
+  new THREE.RingGeometry(0.94, 1, 48),
+  new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.6,
+    depthTest: false,
+  }),
+)
+ring.visible = false
+scene.add(ring)
+const ptr = { gx: GW / 2, gy: GH / 2, down: false, vx: 0, vy: 0, in: false }
+function aim(e) {
+  const gx = (e.clientX / innerWidth) * GW,
+    gy = (1 - e.clientY / innerHeight) * GH
+  ptr.vx = ptr.vx * 0.7 + (gx - ptr.gx) * 0.3
+  ptr.vy = ptr.vy * 0.7 + (gy - ptr.gy) * 0.3
+  ptr.gx = gx
+  ptr.gy = gy
+  ptr.in = true
+  ring.visible = true
+  ring.position.set(
+    (e.clientX / innerWidth) * 2 - 1,
+    1 - (e.clientY / innerHeight) * 2,
+    0,
+  )
+}
+const sizeRing = () => ring.scale.set((BR * 2) / GW, (BR * 2) / GH, 1)
+const respawn = (i) => {
+  ax[i] = Math.random() * GW
+  ay[i] = Math.random() * GH
+  aa[i] = Math.random() * 6.283
+}
+function paint() {
+  if (!ptr.down || !ptr.in) return
+  const cx = ptr.gx | 0,
+    cy = ptr.gy | 0
+  for (let dy = -BR; dy <= BR; dy++)
+    for (let dx = -BR; dx <= BR; dx++) {
+      const d2 = dx * dx + dy * dy
+      if (d2 > BR * BR) continue
+      const i = ((cy + dy + GH) % GH) * GW + ((cx + dx + GW) % GW),
+        f = 1 - Math.sqrt(d2) / BR
+      mask[i] = Math.min(1, mask[i] + 0.2 * f + 0.05)
+      tr[i] += 0.5 * f
+    }
+  for (let j = 0; j < 60; j++) {
+    // spawn circular: agentes nuevos en el borde del pincel
+    const i = (Math.random() * N) | 0,
+      th = Math.random() * 6.283
+    ax[i] = (((ptr.gx + Math.cos(th) * BR * 0.55) % GW) + GW) % GW
+    ay[i] = (((ptr.gy + Math.sin(th) * BR * 0.55) % GH) + GH) % GH
+    aa[i] = Math.random() * 6.283
+  }
+}
 
-<section id="next-steps">
-  <div id="docs">
-    <svg class="icon" role="presentation" aria-hidden="true"><use href="/icons.svg#documentation-icon"></use></svg>
-    <h2>Documentation</h2>
-    <p>Your questions, answered</p>
-    <ul>
-      <li>
-        <a href="https://vite.dev/" target="_blank">
-          <img class="logo" src="${viteLogo}" alt="" />
-          Explore Vite
-        </a>
-      </li>
-      <li>
-        <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript" target="_blank">
-          <img class="button-icon" src="${javascriptLogo}" alt="">
-          Learn more
-        </a>
-      </li>
-    </ul>
-  </div>
-  <div id="social">
-    <svg class="icon" role="presentation" aria-hidden="true"><use href="/icons.svg#social-icon"></use></svg>
-    <h2>Connect with us</h2>
-    <p>Join the Vite community</p>
-    <ul>
-      <li><a href="https://github.com/vitejs/vite" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#github-icon"></use></svg>GitHub</a></li>
-      <li><a href="https://chat.vite.dev/" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#discord-icon"></use></svg>Discord</a></li>
-      <li><a href="https://x.com/vite_js" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#x-icon"></use></svg>X.com</a></li>
-      <li><a href="https://bsky.app/profile/vite.dev" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#bluesky-icon"></use></svg>Bluesky</a></li>
-    </ul>
-  </div>
-</section>
+/* ---------- Physarum ---------- */
+const N = CFG.AGENTS,
+  ax = new Float32Array(N),
+  ay = new Float32Array(N),
+  aa = new Float32Array(N)
+for (let i = 0; i < N; i++) respawn(i)
+const o1 = [0, 0, 0, 0],
+  o2 = [0, 0, 0, 0],
+  waves = []
+function ev(p, S, o) {
+  o[0] = p.sd[0] + p.sd[1] * Math.pow(S, p.sd[2])
+  o[1] = p.sa[0] + p.sa[1] * Math.pow(S, p.sa[2])
+  o[2] = p.ra[0] + p.ra[1] * Math.pow(S, p.ra[2])
+  o[3] = p.md[0] + p.md[1] * Math.pow(S, p.md[2])
+}
+function smp(x, y) {
+  let ix = x | 0,
+    iy = y | 0
+  if (ix < 0) ix += GW
+  else if (ix >= GW) ix -= GW
+  if (iy < 0) iy += GH
+  else if (iy >= GH) iy -= GH
+  return tr[iy * GW + ix]
+}
+function agents(dt) {
+  const A = P[fon],
+    B = P[pin],
+    sp = dt * 60,
+    bx = ptr.down ? clamp(ptr.vx, -3, 3) * 0.6 : 0,
+    by = ptr.down ? clamp(ptr.vy, -3, 3) * 0.6 : 0
+  for (let i = 0; i < N; i++) {
+    let x = ax[i],
+      y = ay[i],
+      a = aa[i]
+    const ci = (y | 0) * GW + (x | 0),
+      m = mask[ci],
+      v = tr[ci] / CAP
+    ev(A, clamp(v * A.sc, 1e-9, 1), o1)
+    let sd = o1[0],
+      sa = o1[1],
+      ra = o1[2],
+      md = o1[3],
+      dp = A.dp
+    if (m > 0.01) {
+      ev(B, clamp(v * B.sc, 1e-9, 1), o2)
+      sd += (o2[0] - sd) * m
+      sa += (o2[1] - sa) * m
+      ra += (o2[2] - ra) * m
+      md += (o2[3] - md) * m
+      dp += (B.dp - dp) * m
+    }
+    const l = smp(x + Math.cos(a - sa) * sd, y + Math.sin(a - sa) * sd),
+      c = smp(x + Math.cos(a) * sd, y + Math.sin(a) * sd),
+      r = smp(x + Math.cos(a + sa) * sd, y + Math.sin(a + sa) * sd)
+    if (c > l && c > r) {
+    } else if (c < l && c < r) a += Math.random() < 0.5 ? -ra : ra
+    else if (l > r) a -= ra
+    else if (r > l) a += ra
+    x += Math.cos(a) * md * sp + bx * m
+    y += Math.sin(a) * md * sp + by * m // el pincel arrastra a los agentes
+    for (let w = 0; w < waves.length; w++) {
+      const wv = waves[w],
+        dx = x - wv.x,
+        dy = y - wv.y,
+        d = Math.hypot(dx, dy) || 1
+      if (Math.abs(d - wv.r) < 4) {
+        x += (dx / d) * 1.6
+        y += (dy / d) * 1.6
+      }
+    }
+    if (x < 0) x += GW
+    else if (x >= GW) x -= GW
+    if (y < 0) y += GH
+    else if (y >= GH) y -= GH
+    if (x >= GW - 0.001) x = 0
+    if (y >= GH - 0.001) y = 0
+    ax[i] = x
+    ay[i] = y
+    aa[i] = a
+    const di = (y | 0) * GW + (x | 0)
+    tr[di] += dp * Math.max(0, 1 - tr[di] / CAP) // depósito saturante
+  }
+  for (let j = 0; j < N * 0.001; j++) respawn((Math.random() * N) | 0) // reaparición periódica, como en la referencia
+  for (let w = waves.length - 1; w >= 0; w--) {
+    const wv = waves[w]
+    wv.r += 45 * dt
+    const n = Math.floor(wv.r * 6.283)
+    for (let j = 0; j < n; j += 2) {
+      const an = (j / n) * 6.283,
+        ix = (wv.x + Math.cos(an) * wv.r) | 0,
+        iy = (wv.y + Math.sin(an) * wv.r) | 0
+      if (ix > 0 && iy > 0 && ix < GW && iy < GH) tr[iy * GW + ix] += 0.6
+    }
+    if (wv.r > GW * 0.7) waves.splice(w, 1)
+  }
+}
+function diffuse() {
+  const dec = clamp(P[fon].dc + M * 0.03, 0.85, 0.985)
+  for (let y = 0; y < GH; y++) {
+    const r0 = (y ? y - 1 : GH - 1) * GW,
+      r1 = y * GW,
+      r2 = (y < GH - 1 ? y + 1 : 0) * GW
+    for (let x = 0; x < GW; x++) {
+      const l = XM[x],
+        r = XP[x],
+        s =
+          tr[r0 + l] +
+          tr[r0 + x] +
+          tr[r0 + r] +
+          tr[r1 + l] +
+          tr[r1 + x] +
+          tr[r1 + r] +
+          tr[r2 + l] +
+          tr[r2 + x] +
+          tr[r2 + r]
+      tmp[r1 + x] = (tr[r1 + x] * 0.35 + (s / 9) * 0.65) * dec
+    }
+  }
+  const s = tr
+  tr = tmp
+  tmp = s
+  for (let i = 0, p = 0; i < tr.length; i++, p += 4) {
+    mask[i] *= 0.9996
+    tr2[i] += (tr[i] - tr2[i]) * 0.15 // canal retrasado para resaltar lo que crece
+    texData[p] = LUT[Math.min(255, (tr[i] / CAP) * 255) | 0]
+    texData[p + 1] = LUT[Math.min(255, (tr2[i] / CAP) * 255) | 0]
+  }
+  tex.needsUpdate = true
+}
+function shock() {
+  // cambio agresivo: borra casi todo y reubica a todos los agentes
+  for (let i = 0; i < tr.length; i++) {
+    tr[i] *= 0.08
+    tr2[i] = 0
+  }
+  for (let i = 0; i < N; i++) respawn(i)
+  flash = 1
+}
 
-<div class="ticks"></div>
-<section id="spacer"></section>
-`
+/* ---------- Interfaz ---------- */
+const actEl = document.getElementById('act'),
+  keysEl = document.getElementById('keys')
+let capT
+const say = (t) => {
+  actEl.textContent = t
+  actEl.style.opacity = 1
+  clearTimeout(capT)
+  capT = setTimeout(() => (actEl.style.opacity = 0), 2200)
+}
+say('Physarum')
+const hud = () =>
+  (keysEl.textContent = `clic izq: pincel ${P[pin].name} · 1–8 fondo ${P[fon].name} (cambio brusco) · Shift+1–8 pincel · C color azul↔oro · V onda · ↑↓ relieve ${relief.toFixed(1)} · W/S memoria ${M.toFixed(1)} · Q/E pincel ${BR} · X limpiar · H ocultar · F pantalla completa · arrastra tu audio, espacio = pausa`)
+function setColor(t) {
+  kFrom = k
+  kTo = t
+  kT0 = performance.now()
+} // transición suave de 2,5 s tras un solo toque
+let aud
+addEventListener('keydown', (e) => {
+  if (e.key.startsWith('Arrow') || e.key === ' ') e.preventDefault() // evita que la página se desplace
+  const d = /^Digit([1-8])$/.exec(e.code),
+    key = e.key.toLowerCase()
+  if (d) {
+    const i = +d[1] - 1
+    if (e.shiftKey) {
+      pin = i
+      say('Pincel · ' + P[i].name)
+    } else {
+      fon = i
+      shock()
+      say(P[i].name)
+    }
+  } else if (key === 'c') setColor(kTo > 0.5 ? 0 : 1)
+  else if (key === 'g') setColor(1)
+  else if (key === 'b') setColor(0)
+  else if (key === 'v')
+    waves.push({
+      x: ptr.in ? ptr.gx : GW / 2,
+      y: ptr.in ? ptr.gy : GH / 2,
+      r: 2,
+    })
+  else if (key === 'arrowup') relief = clamp(relief + 0.5, 0, 14)
+  else if (key === 'arrowdown') relief = clamp(relief - 0.5, 0, 14)
+  else if (key === 'w') M = clamp(M + 0.1, -1, 1)
+  else if (key === 's') M = clamp(M - 0.1, -1, 1)
+  else if (key === 'e') BR = clamp(BR + 2, 4, 60)
+  else if (key === 'q') BR = clamp(BR - 2, 4, 60)
+  else if (key === 'x') {
+    tr.fill(0)
+    tr2.fill(0)
+    mask.fill(0)
+  } else if (key === 'h') document.body.classList.toggle('hide')
+  else if (key === 'f')
+    document.fullscreenElement
+      ? document.exitFullscreen()
+      : document.documentElement.requestFullscreen()
+  else if (key === ' ' && aud) aud.paused ? aud.play() : aud.pause()
+  sizeRing()
+  hud()
+})
+addEventListener('pointerdown', (e) => {
+  ptr.down = true
+  aim(e)
+})
+addEventListener('pointerup', () => (ptr.down = false))
+addEventListener('pointermove', aim)
+addEventListener('contextmenu', (e) => e.preventDefault())
+addEventListener('resize', () => renderer.setSize(innerWidth, innerHeight))
+addEventListener('dragover', (e) => e.preventDefault())
+addEventListener('drop', (e) => {
+  e.preventDefault()
+  const f = e.dataTransfer.files[0]
+  if (f && f.type.startsWith('audio')) {
+    if (aud) aud.pause()
+    aud = new Audio(URL.createObjectURL(f))
+    aud.play()
+  }
+}) // solo reproduce
 
-setupCounter(document.querySelector('#counter'))
+/* ---------- Bucle ---------- */
+let last = performance.now()
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000)
+  last = now
+  const u = clamp((now - kT0) / 2500, 0, 1)
+  k = kFrom + (kTo - kFrom) * u * u * (3 - 2 * u)
+  flash *= Math.exp(-dt / 0.35)
+  U.k.value = k
+  U.relief.value = relief
+  U.flash.value = flash
+  paint()
+  agents(dt)
+  diffuse()
+  renderer.render(scene, cam)
+  requestAnimationFrame(loop)
+}
+sizeRing()
+hud()
+requestAnimationFrame(loop)
