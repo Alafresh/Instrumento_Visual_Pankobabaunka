@@ -4,6 +4,7 @@
    (técnica de Sage Jenson). Un punto es el FONDO y otro el PINCEL; el pincel pinta una máscara que los mezcla. */
 const CFG = { AGENTS: 20000, GW: 384, CAP: 3 }
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
+
 /* Puntos: sd distancia de sensor, sa ángulo de sensor, ra giro, md paso → [base, amplitud, exponente]; sc escala del sensado; dp depósito; dc decaimiento */
 const P = [
   {
@@ -95,22 +96,43 @@ let fon = 0,
   relief = 4, // Control de relieve para el shader 3D
   flash = 0
 
+// Reset de estilos del DOM directamente en JS con cursor oculto
+document.documentElement.style.cssText =
+  'margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#02060c;cursor:none;'
+document.body.style.cssText =
+  'margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#02060c;cursor:none;'
+
 const renderer = new THREE.WebGLRenderer({ antialias: false })
-// El tamaño lo manda el CSS (updateStyle=false): así el canvas nunca excede la ventana ni genera barras de desplazamiento
-const fit = () =>
-  renderer.setSize(
-    document.documentElement.clientWidth,
-    document.documentElement.clientHeight,
-    false,
-  )
+renderer.setClearColor(0x02060c, 1) // Garantiza buffer WebGL de color oscuro
 renderer.setPixelRatio(1)
+
+// Estilos estrictos para el canvas de Three.js
+Object.assign(renderer.domElement.style, {
+  position: 'fixed',
+  top: '0',
+  left: '0',
+  width: '100%',
+  height: '100%',
+  display: 'block',
+  border: 'none',
+  outline: 'none',
+  margin: '0',
+  padding: '0',
+  cursor: 'none',
+})
+
+const fit = () => {
+  const w = window.innerWidth || document.documentElement.clientWidth
+  const h = window.innerHeight || document.documentElement.clientHeight
+  renderer.setSize(w, h, false)
+}
 fit()
 document.body.appendChild(renderer.domElement)
-document.documentElement.style.overflow = document.body.style.overflow =
-  'hidden'
+
 addEventListener('scroll', () => scrollTo(0, 0))
 addEventListener('wheel', (e) => e.preventDefault(), { passive: false })
 addEventListener('touchmove', (e) => e.preventDefault(), { passive: false })
+
 const scene = new THREE.Scene(),
   cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 10)
 cam.position.z = 5 // cámara fija: el plano llena la pantalla
@@ -224,7 +246,6 @@ function paint() {
         tr[i] += 0.5 * f
       }
     for (let j = 0; j < 60; j++) {
-      // spawn circular: agentes nuevos en el borde del pincel
       const i = (Math.random() * N) | 0,
         th = Math.random() * 6.283
       ax[i] = (((ptr.gx + Math.cos(th) * BR * 0.55) % GW) + GW) % GW
@@ -271,7 +292,7 @@ function smp(x, y) {
 function agents(dt) {
   const A = P[fon],
     B = P[pin],
-    sp = dt * 60 * speed, // Multiplica la velocidad base por el factor speed
+    sp = dt * 60 * speed,
     bx = ptr.down ? clamp(ptr.vx, -3, 3) * 0.6 : 0,
     by = ptr.down ? clamp(ptr.vy, -3, 3) * 0.6 : 0
   for (let i = 0; i < N; i++) {
@@ -304,7 +325,7 @@ function agents(dt) {
     else if (l > r) a -= ra
     else if (r > l) a += ra
     x += Math.cos(a) * md * sp + bx * m
-    y += Math.sin(a) * md * sp + by * m // el pincel arrastra a los agentes
+    y += Math.sin(a) * md * sp + by * m
     for (let w = 0; w < waves.length; w++) {
       const wv = waves[w],
         dx = x - wv.x,
@@ -325,12 +346,12 @@ function agents(dt) {
     ay[i] = y
     aa[i] = a
     const di = (y | 0) * GW + (x | 0)
-    tr[di] += dp * Math.max(0, 1 - tr[di] / CAP) // depósito saturante
+    tr[di] += dp * Math.max(0, 1 - tr[di] / CAP)
     if (ptr.rightDown && agentGold > 0.02) {
-      goldTr[di] = Math.min(1, goldTr[di] + agentGold * 0.85) // Propagación solo mientras se mantiene presionado el clic
+      goldTr[di] = Math.min(1, goldTr[di] + agentGold * 0.85)
     }
   }
-  for (let j = 0; j < N * 0.001; j++) respawn((Math.random() * N) | 0) // reaparición periódica, como en la referencia
+  for (let j = 0; j < N * 0.001; j++) respawn((Math.random() * N) | 0)
   for (let w = waves.length - 1; w >= 0; w--) {
     const wv = waves[w]
     wv.r += 45 * dt
@@ -346,7 +367,7 @@ function agents(dt) {
 }
 function diffuse() {
   const dec = clamp(P[fon].dc + M * 0.03, 0.85, 0.985)
-  const gDec = ptr.rightDown ? 0.94 : 0.8 // Al soltar el clic, el oro se desvanece de inmediato a azul
+  const gDec = ptr.rightDown ? 0.94 : 0.8
   for (let y = 0; y < GH; y++) {
     const r0 = (y ? y - 1 : GH - 1) * GW,
       r1 = y * GW,
@@ -388,15 +409,14 @@ function diffuse() {
 
   for (let i = 0, p = 0; i < tr.length; i++, p += 4) {
     mask[i] *= 0.9996
-    tr2[i] += (tr[i] - tr2[i]) * 0.15 // canal retrasado para resaltar lo que crece
+    tr2[i] += (tr[i] - tr2[i]) * 0.15
     texData[p] = LUT[Math.min(255, (tr[i] / CAP) * 255) | 0]
     texData[p + 1] = LUT[Math.min(255, (tr2[i] / CAP) * 255) | 0]
-    texData[p + 2] = LUT[Math.min(255, goldTr[i] * 255) | 0] // Mapa de oro enviado al Shader
+    texData[p + 2] = LUT[Math.min(255, goldTr[i] * 255) | 0]
   }
   tex.needsUpdate = true
 }
 function shock() {
-  // cambio agresivo: borra casi todo y reubica a todos los agentes
   for (let i = 0; i < tr.length; i++) {
     tr[i] *= 0.08
     tr2[i] = 0
@@ -410,7 +430,6 @@ function shock() {
 const actEl = document.getElementById('act'),
   keysEl = document.getElementById('keys')
 
-// Desactivar despliegue de mensajes en pantalla
 const say = () => {}
 const hud = () => {}
 
@@ -423,7 +442,7 @@ introEl.style.cssText = `
   left: 0;
   width: 100vw;
   height: 100vh;
-  background: #04060c;
+  background: #02060c;
   color: #ffffff;
   display: flex;
   justify-content: center;
@@ -442,15 +461,12 @@ document.body.appendChild(introEl)
 
 let aud
 introEl.addEventListener('click', () => {
-  // Reproducir canción local en assets
   aud = new Audio('/src/assets/azul_oro.mp3')
   aud.play().catch((err) => console.log('Error reproduciendo el audio:', err))
 
-  // Eliminar intro visual
   introEl.style.opacity = '0'
   setTimeout(() => introEl.remove(), 600)
 
-  // Eliminar HUD/textos completamente
   if (actEl) actEl.style.display = 'none'
   if (keysEl) keysEl.style.display = 'none'
 
@@ -458,7 +474,7 @@ introEl.addEventListener('click', () => {
 })
 
 addEventListener('keydown', (e) => {
-  if (e.key.startsWith('Arrow') || e.key === ' ') e.preventDefault() // evita que la página se desplace
+  if (e.key.startsWith('Arrow') || e.key === ' ') e.preventDefault()
   const d = /^Digit([1-8])$/.exec(e.code),
     key = e.key.toLowerCase()
   if (d) {
