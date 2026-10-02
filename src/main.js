@@ -92,11 +92,7 @@ let fon = 0,
   M = 0,
   BR = 14,
   speed = 0.3, // Control de velocidad de agentes
-  relief = 4, // Mantener fijo para el shader 3D
-  k = 0,
-  kFrom = 0,
-  kTo = 0,
-  kT0 = -1e9,
+  relief = 4, // Control de relieve para el shader 3D
   flash = 0
 
 const renderer = new THREE.WebGLRenderer({ antialias: false })
@@ -123,7 +119,9 @@ const ASP = innerWidth / innerHeight,
   GH = Math.round(GW / ASP),
   CAP = CFG.CAP
 let tr = new Float32Array(GW * GH),
-  tmp = new Float32Array(GW * GH)
+  tmp = new Float32Array(GW * GH),
+  goldTr = new Float32Array(GW * GH),
+  goldTmp = new Float32Array(GW * GH)
 const tr2 = new Float32Array(GW * GH),
   mask = new Float32Array(GW * GH)
 const XM = new Int32Array(GW),
@@ -143,12 +141,22 @@ const tex = new THREE.DataTexture(
   THREE.UnsignedByteType,
 )
 tex.magFilter = tex.minFilter = THREE.LinearFilter
+
+// Tonos de azul: #03045e, #0077b6, #00b4d8
+const blueColors = [
+  new THREE.Vector3(3 / 255, 4 / 255, 94 / 255),
+  new THREE.Vector3(0 / 255, 119 / 255, 182 / 255),
+  new THREE.Vector3(0 / 255, 180 / 255, 216 / 255),
+]
+
 const U = {
   tr: { value: tex },
   px: { value: new THREE.Vector2(1 / GW, 1 / GH) },
   relief: { value: relief },
-  k: { value: 0 },
   flash: { value: 0 },
+  b1: { value: blueColors[0] },
+  b2: { value: blueColors[1] },
+  b3: { value: blueColors[2] },
 }
 scene.add(
   new THREE.Mesh(
@@ -157,19 +165,19 @@ scene.add(
       uniforms: U,
       vertexShader:
         'varying vec2 vUv;void main(){vUv=uv;gl_Position=vec4(position.xy,0.,1.);}',
-      fragmentShader: `varying vec2 vUv;uniform sampler2D tr;uniform vec2 px;uniform float relief,k,flash;
+      fragmentShader: `varying vec2 vUv;uniform sampler2D tr;uniform vec2 px;uniform float relief,flash;uniform vec3 b1,b2,b3;
 float H(vec2 u){return texture2D(tr,u).r;}
-vec3 grad(float h){ // azul cielo (k=0) ↔ oro (k=1)
- vec3 a=mix(vec3(.008,.03,.09),vec3(.04,.02,0.),k),b=mix(vec3(.05,.38,.75),vec3(.7,.4,.05),k),c=mix(vec3(.6,.88,1.),vec3(1.,.86,.42),k);
+vec3 grad(float h, float localK){
+ vec3 a=mix(b1,vec3(.04,.02,0.),localK),b=mix(b2,vec3(.7,.4,.05),localK),c=mix(b3,vec3(1.,.86,.42),localK);
  return h<.5?mix(a,b,h*2.):mix(b,c,(h-.5)*2.);}
 void main(){
- vec4 t=texture2D(tr,vUv);float h=t.r;
+ vec4 t=texture2D(tr,vUv);float h=t.r, localK=t.b;
  float dx=H(vUv+vec2(px.x,0.))-H(vUv-vec2(px.x,0.)),dy=H(vUv+vec2(0.,px.y))-H(vUv-vec2(0.,px.y));
  vec3 n=normalize(vec3(-dx*relief,-dy*relief,1.)),L=normalize(vec3(-.5,.6,.9));
  float dif=max(dot(n,L),0.),spec=pow(max(dot(reflect(-L,n),vec3(0.,0.,1.)),0.),40.);
  float grow=clamp((t.r-t.g)*6.,0.,1.); // rastro que está creciendo: canal retrasado vs actual
- vec3 col=grad(h)*(.55+.7*dif)+grad(1.)*spec*h*.9+grad(.8)*h*h*.3;
- col+=mix(vec3(.7,.95,1.),vec3(1.,.95,.7),k)*grow*.8;
+ vec3 col=grad(h,localK)*(.55+.7*dif)+grad(1.,localK)*spec*h*.9+grad(.8,localK)*h*h*.3;
+ col+=mix(vec3(.7,.95,1.),vec3(1.,.95,.7),localK)*grow*.8;
  col*=1.+flash*.7;
  gl_FragColor=vec4(col,1.);}`,
     }),
@@ -177,18 +185,15 @@ void main(){
 )
 
 /* ---------- Puntero y pincel ---------- */
-const ring = new THREE.Mesh(
-  new THREE.RingGeometry(0.94, 1, 48),
-  new THREE.MeshBasicMaterial({
-    color: 0xffffff,
-    transparent: true,
-    opacity: 0.6,
-    depthTest: false,
-  }),
-)
-ring.visible = false
-scene.add(ring)
-const ptr = { gx: GW / 2, gy: GH / 2, down: false, vx: 0, vy: 0, in: false }
+const ptr = {
+  gx: GW / 2,
+  gy: GH / 2,
+  down: false,
+  rightDown: false,
+  vx: 0,
+  vy: 0,
+  in: false,
+}
 function aim(e) {
   const gx = (e.clientX / innerWidth) * GW,
     gy = (1 - e.clientY / innerHeight) * GH
@@ -197,39 +202,45 @@ function aim(e) {
   ptr.gx = gx
   ptr.gy = gy
   ptr.in = true
-  ring.visible = true
-  ring.position.set(
-    (e.clientX / innerWidth) * 2 - 1,
-    1 - (e.clientY / innerHeight) * 2,
-    0,
-  )
 }
-const sizeRing = () => ring.scale.set((BR * 2) / GW, (BR * 2) / GH, 1)
+const sizeRing = () => {}
 const respawn = (i) => {
   ax[i] = Math.random() * GW
   ay[i] = Math.random() * GH
   aa[i] = Math.random() * 6.283
 }
 function paint() {
-  if (!ptr.down || !ptr.in) return
+  if (!ptr.in) return
   const cx = ptr.gx | 0,
     cy = ptr.gy | 0
-  for (let dy = -BR; dy <= BR; dy++)
-    for (let dx = -BR; dx <= BR; dx++) {
-      const d2 = dx * dx + dy * dy
-      if (d2 > BR * BR) continue
-      const i = ((cy + dy + GH) % GH) * GW + ((cx + dx + GW) % GW),
-        f = 1 - Math.sqrt(d2) / BR
-      mask[i] = Math.min(1, mask[i] + 0.2 * f + 0.05)
-      tr[i] += 0.5 * f
+  if (ptr.down) {
+    for (let dy = -BR; dy <= BR; dy++)
+      for (let dx = -BR; dx <= BR; dx++) {
+        const d2 = dx * dx + dy * dy
+        if (d2 > BR * BR) continue
+        const i = ((cy + dy + GH) % GH) * GW + ((cx + dx + GW) % GW),
+          f = 1 - Math.sqrt(d2) / BR
+        mask[i] = Math.min(1, mask[i] + 0.2 * f + 0.05)
+        tr[i] += 0.5 * f
+      }
+    for (let j = 0; j < 60; j++) {
+      // spawn circular: agentes nuevos en el borde del pincel
+      const i = (Math.random() * N) | 0,
+        th = Math.random() * 6.283
+      ax[i] = (((ptr.gx + Math.cos(th) * BR * 0.55) % GW) + GW) % GW
+      ay[i] = (((ptr.gy + Math.sin(th) * BR * 0.55) % GH) + GH) % GH
+      aa[i] = Math.random() * 6.283
     }
-  for (let j = 0; j < 60; j++) {
-    // spawn circular: agentes nuevos en el borde del pincel
-    const i = (Math.random() * N) | 0,
-      th = Math.random() * 6.283
-    ax[i] = (((ptr.gx + Math.cos(th) * BR * 0.55) % GW) + GW) % GW
-    ay[i] = (((ptr.gy + Math.sin(th) * BR * 0.55) % GH) + GH) % GH
-    aa[i] = Math.random() * 6.283
+  }
+  if (ptr.rightDown) {
+    for (let dy = -BR; dy <= BR; dy++)
+      for (let dx = -BR; dx <= BR; dx++) {
+        const d2 = dx * dx + dy * dy
+        if (d2 > BR * BR) continue
+        const i = ((cy + dy + GH) % GH) * GW + ((cx + dx + GW) % GW),
+          f = 1 - Math.sqrt(d2) / BR
+        goldTr[i] = Math.min(1, goldTr[i] + 0.6 * f + 0.1)
+      }
   }
 }
 
@@ -269,7 +280,8 @@ function agents(dt) {
       a = aa[i]
     const ci = (y | 0) * GW + (x | 0),
       m = mask[ci],
-      v = tr[ci] / CAP
+      v = tr[ci] / CAP,
+      agentGold = goldTr[ci]
     ev(A, clamp(v * A.sc, 1e-9, 1), o1)
     let sd = o1[0],
       sa = o1[1],
@@ -314,6 +326,9 @@ function agents(dt) {
     aa[i] = a
     const di = (y | 0) * GW + (x | 0)
     tr[di] += dp * Math.max(0, 1 - tr[di] / CAP) // depósito saturante
+    if (ptr.rightDown && agentGold > 0.02) {
+      goldTr[di] = Math.min(1, goldTr[di] + agentGold * 0.85) // Propagación solo mientras se mantiene presionado el clic
+    }
   }
   for (let j = 0; j < N * 0.001; j++) respawn((Math.random() * N) | 0) // reaparición periódica, como en la referencia
   for (let w = waves.length - 1; w >= 0; w--) {
@@ -331,34 +346,52 @@ function agents(dt) {
 }
 function diffuse() {
   const dec = clamp(P[fon].dc + M * 0.03, 0.85, 0.985)
+  const gDec = ptr.rightDown ? 0.94 : 0.8 // Al soltar el clic, el oro se desvanece de inmediato a azul
   for (let y = 0; y < GH; y++) {
     const r0 = (y ? y - 1 : GH - 1) * GW,
       r1 = y * GW,
       r2 = (y < GH - 1 ? y + 1 : 0) * GW
     for (let x = 0; x < GW; x++) {
       const l = XM[x],
-        r = XP[x],
-        s =
-          tr[r0 + l] +
-          tr[r0 + x] +
-          tr[r0 + r] +
-          tr[r1 + l] +
-          tr[r1 + x] +
-          tr[r1 + r] +
-          tr[r2 + l] +
-          tr[r2 + x] +
-          tr[r2 + r]
+        r = XP[x]
+      const s =
+        tr[r0 + l] +
+        tr[r0 + x] +
+        tr[r0 + r] +
+        tr[r1 + l] +
+        tr[r1 + x] +
+        tr[r1 + r] +
+        tr[r2 + l] +
+        tr[r2 + x] +
+        tr[r2 + r]
       tmp[r1 + x] = (tr[r1 + x] * 0.35 + (s / 9) * 0.65) * dec
+
+      const sG =
+        goldTr[r0 + l] +
+        goldTr[r0 + x] +
+        goldTr[r0 + r] +
+        goldTr[r1 + l] +
+        goldTr[r1 + x] +
+        goldTr[r1 + r] +
+        goldTr[r2 + l] +
+        goldTr[r2 + x] +
+        goldTr[r2 + r]
+      goldTmp[r1 + x] = (goldTr[r1 + x] * 0.35 + (sG / 9) * 0.65) * gDec
     }
   }
   const s = tr
   tr = tmp
   tmp = s
+  const sg = goldTr
+  goldTr = goldTmp
+  goldTmp = sg
+
   for (let i = 0, p = 0; i < tr.length; i++, p += 4) {
     mask[i] *= 0.9996
     tr2[i] += (tr[i] - tr2[i]) * 0.15 // canal retrasado para resaltar lo que crece
     texData[p] = LUT[Math.min(255, (tr[i] / CAP) * 255) | 0]
     texData[p + 1] = LUT[Math.min(255, (tr2[i] / CAP) * 255) | 0]
+    texData[p + 2] = LUT[Math.min(255, goldTr[i] * 255) | 0] // Mapa de oro enviado al Shader
   }
   tex.needsUpdate = true
 }
@@ -367,30 +400,63 @@ function shock() {
   for (let i = 0; i < tr.length; i++) {
     tr[i] *= 0.08
     tr2[i] = 0
+    goldTr[i] = 0
   }
   for (let i = 0; i < N; i++) respawn(i)
   flash = 1
 }
 
-/* ---------- Interfaz ---------- */
+/* ---------- Interfaz e Intro ---------- */
 const actEl = document.getElementById('act'),
   keysEl = document.getElementById('keys')
-let capT
-const say = (t) => {
-  actEl.textContent = t
-  actEl.style.opacity = 1
-  clearTimeout(capT)
-  capT = setTimeout(() => (actEl.style.opacity = 0), 2200)
-}
-say('Physarum')
-const hud = () =>
-  (keysEl.textContent = `clic izq: pincel ${P[pin].name} · 1–8 fondo ${P[fon].name} (cambio brusco) · Shift+1–8 pincel · C color azul↔oro · V onda · ↑↓ velocidad ${speed.toFixed(1)} · W/S memoria ${M.toFixed(1)} · Q/E pincel ${BR} · X limpiar · H ocultar · F pantalla completa · arrastra tu audio, espacio = pausa`)
-function setColor(t) {
-  kFrom = k
-  kTo = t
-  kT0 = performance.now()
-} // transición suave de 2,5 s tras un solo toque
+
+// Desactivar despliegue de mensajes en pantalla
+const say = () => {}
+const hud = () => {}
+
+/* ---------- Intro Overlay ---------- */
+const introEl = document.createElement('div')
+introEl.id = 'intro-screen'
+introEl.style.cssText = `
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: #04060c;
+  color: #ffffff;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 2.5rem;
+  font-weight: 600;
+  letter-spacing: 3px;
+  cursor: pointer;
+  z-index: 10000;
+  user-select: none;
+  transition: opacity 0.6s ease;
+`
+introEl.textContent = 'Empezar'
+document.body.appendChild(introEl)
+
 let aud
+introEl.addEventListener('click', () => {
+  // Reproducir canción local en assets
+  aud = new Audio('/src/assets/azul_oro.mp3')
+  aud.play().catch((err) => console.log('Error reproduciendo el audio:', err))
+
+  // Eliminar intro visual
+  introEl.style.opacity = '0'
+  setTimeout(() => introEl.remove(), 600)
+
+  // Eliminar HUD/textos completamente
+  if (actEl) actEl.style.display = 'none'
+  if (keysEl) keysEl.style.display = 'none'
+
+  fit()
+})
+
 addEventListener('keydown', (e) => {
   if (e.key.startsWith('Arrow') || e.key === ' ') e.preventDefault() // evita que la página se desplace
   const d = /^Digit([1-8])$/.exec(e.code),
@@ -399,16 +465,16 @@ addEventListener('keydown', (e) => {
     const i = +d[1] - 1
     if (e.shiftKey) {
       pin = i
-      say('Pincel · ' + P[i].name)
     } else {
       fon = i
       shock()
-      say(P[i].name)
     }
-  } else if (key === 'c') setColor(kTo > 0.5 ? 0 : 1)
-  else if (key === 'g') setColor(1)
-  else if (key === 'b') setColor(0)
-  else if (key === 'v')
+  } else if (key === 'c') {
+    const shuffled = [...blueColors].sort(() => Math.random() - 0.5)
+    U.b1.value = shuffled[0]
+    U.b2.value = shuffled[1]
+    U.b3.value = shuffled[2]
+  } else if (key === 'v')
     waves.push({
       x: ptr.in ? ptr.gx : GW / 2,
       y: ptr.in ? ptr.gy : GH / 2,
@@ -416,13 +482,18 @@ addEventListener('keydown', (e) => {
     })
   else if (key === 'arrowup') speed = clamp(speed + 0.2, 0.1, 5.0)
   else if (key === 'arrowdown') speed = clamp(speed - 0.2, 0.1, 5.0)
-  else if (key === 'w') M = clamp(M + 0.1, -1, 1)
-  else if (key === 's') M = clamp(M - 0.1, -1, 1)
-  else if (key === 'e') BR = clamp(BR + 2, 4, 60)
+  else if (key === 'w') {
+    M = clamp(M + 0.1, -1, 1)
+    relief = clamp(relief + 0.5, 0, 14)
+  } else if (key === 's') {
+    M = clamp(M - 0.1, -1, 1)
+    relief = clamp(relief - 0.5, 0, 14)
+  } else if (key === 'e') BR = clamp(BR + 2, 4, 60)
   else if (key === 'q') BR = clamp(BR - 2, 4, 60)
   else if (key === 'x') {
     tr.fill(0)
     tr2.fill(0)
+    goldTr.fill(0)
     mask.fill(0)
   } else if (key === 'h') document.body.classList.toggle('hide')
   else if (key === 'f')
@@ -431,13 +502,16 @@ addEventListener('keydown', (e) => {
       : document.documentElement.requestFullscreen()
   else if (key === ' ' && aud) aud.paused ? aud.play() : aud.pause()
   sizeRing()
-  hud()
 })
 addEventListener('pointerdown', (e) => {
-  ptr.down = true
+  if (e.button === 0) ptr.down = true
+  if (e.button === 2) ptr.rightDown = true
   aim(e)
 })
-addEventListener('pointerup', () => (ptr.down = false))
+addEventListener('pointerup', (e) => {
+  if (e.button === 0) ptr.down = false
+  if (e.button === 2) ptr.rightDown = false
+})
 addEventListener('pointermove', aim)
 addEventListener('contextmenu', (e) => e.preventDefault())
 addEventListener('resize', fit)
@@ -450,17 +524,14 @@ addEventListener('drop', (e) => {
     aud = new Audio(URL.createObjectURL(f))
     aud.play()
   }
-}) // solo reproduce
+})
 
 /* ---------- Bucle ---------- */
 let last = performance.now()
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000)
   last = now
-  const u = clamp((now - kT0) / 2500, 0, 1)
-  k = kFrom + (kTo - kFrom) * u * u * (3 - 2 * u)
   flash *= Math.exp(-dt / 0.35)
-  U.k.value = k
   U.relief.value = relief
   U.flash.value = flash
   paint()
@@ -470,5 +541,4 @@ function loop(now) {
   requestAnimationFrame(loop)
 }
 sizeRing()
-hud()
 requestAnimationFrame(loop)
