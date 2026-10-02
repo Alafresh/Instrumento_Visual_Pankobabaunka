@@ -91,7 +91,8 @@ let fon = 0,
   pin = 1,
   M = 0,
   BR = 14,
-  relief = 4,
+  speed = 0.3, // Control de velocidad de agentes
+  relief = 4, // Mantener fijo para el shader 3D
   k = 0,
   kFrom = 0,
   kTo = 0,
@@ -259,7 +260,7 @@ function smp(x, y) {
 function agents(dt) {
   const A = P[fon],
     B = P[pin],
-    sp = dt * 60,
+    sp = dt * 60 * speed, // Multiplica la velocidad base por el factor speed
     bx = ptr.down ? clamp(ptr.vx, -3, 3) * 0.6 : 0,
     by = ptr.down ? clamp(ptr.vy, -3, 3) * 0.6 : 0
   for (let i = 0; i < N; i++) {
@@ -383,7 +384,7 @@ const say = (t) => {
 }
 say('Physarum')
 const hud = () =>
-  (keysEl.textContent = `clic izq: pincel ${P[pin].name} · 1–8 fondo ${P[fon].name} (cambio brusco) · Shift+1–8 pincel · C color azul↔oro · V onda · ↑↓ relieve ${relief.toFixed(1)} · W/S memoria ${M.toFixed(1)} · Q/E pincel ${BR} · X limpiar · H ocultar · F pantalla completa · arrastra tu audio, espacio = pausa`)
+  (keysEl.textContent = `clic izq: pincel ${P[pin].name} · 1–8 fondo ${P[fon].name} (cambio brusco) · Shift+1–8 pincel · C color azul↔oro · V onda · ↑↓ velocidad ${speed.toFixed(1)} · W/S memoria ${M.toFixed(1)} · Q/E pincel ${BR} · X limpiar · H ocultar · F pantalla completa · arrastra tu audio, espacio = pausa`)
 function setColor(t) {
   kFrom = k
   kTo = t
@@ -413,8 +414,8 @@ addEventListener('keydown', (e) => {
       y: ptr.in ? ptr.gy : GH / 2,
       r: 2,
     })
-  else if (key === 'arrowup') relief = clamp(relief + 0.5, 0, 14)
-  else if (key === 'arrowdown') relief = clamp(relief - 0.5, 0, 14)
+  else if (key === 'arrowup') speed = clamp(speed + 0.2, 0.1, 5.0)
+  else if (key === 'arrowdown') speed = clamp(speed - 0.2, 0.1, 5.0)
   else if (key === 'w') M = clamp(M + 0.1, -1, 1)
   else if (key === 's') M = clamp(M - 0.1, -1, 1)
   else if (key === 'e') BR = clamp(BR + 2, 4, 60)
