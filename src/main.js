@@ -1,4 +1,5 @@
-'use strict'
+import audioUrl from './assets/azul_oro.mp3' // Ajusta la ruta si main.js está en la misma carpeta o subcarpeta
+;('use strict')
 /* PHYSARUM · vista fija a pantalla completa. Agentes de 3 sensores sobre un rastro difuso.
    Cada "punto" (algoritmo) define: parámetro = base + amplitud · S^exponente, con S = rastro sensado bajo el agente
    (técnica de Sage Jenson). Un punto es el FONDO y otro el PINCEL; el pincel pinta una máscara que los mezcla. */
@@ -461,7 +462,7 @@ document.body.appendChild(introEl)
 
 let aud
 introEl.addEventListener('click', () => {
-  aud = new Audio('./src/assets/azul_oro.mp3')
+  aud = new Audio(audioUrl)
   aud.play().catch((err) => console.log('Error reproduciendo el audio:', err))
 
   introEl.style.opacity = '0'
