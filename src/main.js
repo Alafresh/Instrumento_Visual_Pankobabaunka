@@ -8,6 +8,16 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 /* Puntos: sd distancia de sensor, sa ángulo de sensor, ra giro, md paso → [base, amplitud, exponente]; sc escala del sensado; dp depósito; dc decaimiento */
 const P = [
   {
+    n: 'Puntos',
+    sd: [3, 0, 1],
+    sa: [1.5, 0, 1],
+    ra: [1.5, 0, 1],
+    md: [0.8, 0, 1],
+    sc: 1,
+    dp: 1.5,
+    dc: 0.9,
+  },
+  {
     n: 'Encaje',
     sd: [5, 0, 1],
     sa: [0.95, 0, 1],
@@ -25,16 +35,6 @@ const P = [
     md: [1, 0, 1],
     sc: 1,
     dp: 0.9,
-    dc: 0.9,
-  },
-  {
-    n: 'Puntos',
-    sd: [3, 0, 1],
-    sa: [1.5, 0, 1],
-    ra: [1.5, 0, 1],
-    md: [0.8, 0, 1],
-    sc: 1,
-    dp: 1.5,
     dc: 0.9,
   },
   {
@@ -92,7 +92,7 @@ let fon = 0,
   pin = 1,
   M = 0,
   BR = 14,
-  speed = 0.3, // Control de velocidad de agentes
+  speed = 0.1, // Control de velocidad de agentes
   relief = 4, // Control de relieve para el shader 3D
   flash = 0
 
