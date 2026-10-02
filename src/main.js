@@ -461,7 +461,7 @@ document.body.appendChild(introEl)
 
 let aud
 introEl.addEventListener('click', () => {
-  aud = new Audio('/src/assets/azul_oro.mp3')
+  aud = new Audio('./src/assets/azul_oro.mp3')
   aud.play().catch((err) => console.log('Error reproduciendo el audio:', err))
 
   introEl.style.opacity = '0'
