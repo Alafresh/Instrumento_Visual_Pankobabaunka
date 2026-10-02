@@ -99,9 +99,21 @@ let fon = 0,
   flash = 0
 
 const renderer = new THREE.WebGLRenderer({ antialias: false })
+// El tamaño lo manda el CSS (updateStyle=false): así el canvas nunca excede la ventana ni genera barras de desplazamiento
+const fit = () =>
+  renderer.setSize(
+    document.documentElement.clientWidth,
+    document.documentElement.clientHeight,
+    false,
+  )
 renderer.setPixelRatio(1)
-renderer.setSize(innerWidth, innerHeight)
+fit()
 document.body.appendChild(renderer.domElement)
+document.documentElement.style.overflow = document.body.style.overflow =
+  'hidden'
+addEventListener('scroll', () => scrollTo(0, 0))
+addEventListener('wheel', (e) => e.preventDefault(), { passive: false })
+addEventListener('touchmove', (e) => e.preventDefault(), { passive: false })
 const scene = new THREE.Scene(),
   cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 10)
 cam.position.z = 5 // cámara fija: el plano llena la pantalla
@@ -427,7 +439,7 @@ addEventListener('pointerdown', (e) => {
 addEventListener('pointerup', () => (ptr.down = false))
 addEventListener('pointermove', aim)
 addEventListener('contextmenu', (e) => e.preventDefault())
-addEventListener('resize', () => renderer.setSize(innerWidth, innerHeight))
+addEventListener('resize', fit)
 addEventListener('dragover', (e) => e.preventDefault())
 addEventListener('drop', (e) => {
   e.preventDefault()
